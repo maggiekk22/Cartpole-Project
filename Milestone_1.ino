@@ -1,44 +1,29 @@
-#include <AccelStepper.h>
-
-
-
-// Pin definitions
-#define DIR_PIN 2
 #define STEP_PIN 3
-#define ENCODER_A 4
-#define ENCODER_B 5
-
-AccelStepper stepper(AccelStepper::DRIVER, STEP_PIN, DIR_PIN);
-
-volatile long encoderPos = 0;
+#define DIR_PIN 2
 
 void setup() {
-  pinMode(ENCODER_A, INPUT_PULLUP);
-  pinMode(ENCODER_B, INPUT_PULLUP);
-  
-  attachInterrupt(digitalPinToInterrupt(ENCODER_A), encoderISR, CHANGE);
-  attachInterrupt(digitalPinToInterrupt(ENCODER_B), encoderISR, CHANGE);
-  
-  stepper.setMaxSpeed(1000);
-  stepper.setAcceleration(500);
+  pinMode(STEP_PIN, OUTPUT);
+  pinMode(DIR_PIN, OUTPUT);
+  Serial.begin(9600);  // For serial command input
 }
 
 void loop() {
-  // Read encoder position
-  long currentPos = encoderPos;
-
-  // Simple control logic (move to center)
-  long target = 0; // Center position
-  long error = target - currentPos;
-
-  stepper.moveTo(error);
-  stepper.run();
+  if (Serial.available()) {
+    char cmd = Serial.read();
+    if (cmd == 'r') { // Command 'r' to move right
+      moveCart(1000, true);  // Move 1000 steps to the right
+    } else if (cmd == 'l') { // Command 'l' to move left
+      moveCart(1000, false); // Move 1000 steps to the left
+    }
+  }
 }
 
-void encoderISR() {
-  // Basic quadrature decoder
-  int a = digitalRead(ENCODER_A);
-  int b = digitalRead(ENCODER_B);
-  if (a == b) encoderPos++;
-  else encoderPos--;
+void moveCart(int steps, bool right) {
+  digitalWrite(DIR_PIN, right ? HIGH : LOW);
+  for (int i = 0; i < steps; i++) {
+    digitalWrite(STEP_PIN, HIGH);
+    delayMicroseconds(800);
+    digitalWrite(STEP_PIN, LOW);
+    delayMicroseconds(800);
+  }
 }

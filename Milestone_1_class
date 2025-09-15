@@ -1,1 +1,31 @@
-
+// include the library
+#include <AccelStepper.h>
+//now pins: step and direction
+#define LED BUILTIN 13 //define the built in LED pin
+#define STEP_PIN 9 // what is step?
+#define DIR_PIN 10
+#define MOTOR_INTERFACE_TYPE 1 //1 means drive using STEP and DIR pins)
+//remove power source from stepper motor to move it
+ 
+AccelStepper stepper = AccelStepper
+(MOTOR_INTERFACE_TYPE, STEP_PIN, DIR_PIN);
+ 
+void setup() {
+    //Activate the pins
+    pinMode(STEP_PIN, O);
+    pinMode(DIR_PIN, OUTPUT);
+ 
+    //activate the motor
+    stepper.setMaxSpeed(100000); //steps per second, maximum speed
+    stepper.setAcceleration(500000); //steps per second^2, set accelration
+ 
+    //move to position 2000 steps
+    stepper.moveTo(500);//ove to 2000 steps
+ 
+}
+ 
+void loop() {
+  // put your main code here, to run repeatedly:
+  //move the motor
+  stepper.run();
+}

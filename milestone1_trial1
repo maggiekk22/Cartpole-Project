@@ -1,0 +1,601 @@
+/*
+ * Arduino Cart Movement with Rotary Encoder Tracking and CSV Data Logging
+ * 
+ * This sketch controls a stepper motor cart while simultaneously tracking
+ * a rotary encoder and logging data to CSV format via Serial Monitor.
+ * 
+ * Hardware Requirements:
+ * - Arduino Uno/Nano/Pro Mini
+ * - Stepper motor + driver (A4988, DRV8825, etc.)
+ * - Rotary encoder (quadrature type)
+ * - Connecting wires
+ * 
+ * Author: Arduino Cart Controller
+ * Version: 1.0
+ */
+
+// ===== PIN DEFINITIONS =====
+// Stepper Motor Control Pins
+const int STEP_PIN = 3;        // Step pulse pin
+const int DIR_PIN = 2;         // Direction control pin
+
+// Rotary Encoder Pins (must be interrupt capable)
+const int ENCODER_PIN_A = 4;   // Encoder channel A
+const int ENCODER_PIN_B = 5;   // Encoder channel B
+
+// ===== GLOBAL VARIABLES =====
+// Encoder tracking variables
+volatile long encoderCount = 0;           // Current encoder position
+volatile bool lastEncoderA = false;      // Previous state of encoder A
+volatile bool lastEncoderB = false;      // Previous state of encoder B
+
+// Movement tracking variables
+long stepPosition = 0;                   // Current step count from start
+unsigned long sessionStartTime = 0;     // Time when current session started
+bool isLogging = false;                  // Flag for data logging state
+
+// Movement parameters
+const int STEPS_PER_COMMAND = 1000;     // Steps to move per command
+const int STEP_DELAY_US = 800;          // Microseconds between step pulses
+const int LOG_INTERVAL = 10;            // Log data every N steps
+
+// ===== ARDUINO SETUP FUNCTION =====
+void setup() {
+  // Initialize serial communication
+  Serial.begin(9600);
+  while (!Serial) {
+    ; // Wait for serial port to connect (needed for some boards)
+  }
+  
+  // Configure stepper motor pins
+  pinMode(STEP_PIN, OUTPUT);
+  pinMode(DIR_PIN, OUTPUT);
+  digitalWrite(STEP_PIN, LOW);
+  digitalWrite(DIR_PIN, LOW);
+  
+  // Configure encoder pins with internal pull-up resistors
+  pinMode(ENCODER_PIN_A, INPUT_PULLUP);
+  pinMode(ENCODER_PIN_B, INPUT_PULLUP);
+  
+  // Read initial encoder states
+  lastEncoderA = digitalRead(ENCODER_PIN_A);
+  lastEncoderB = digitalRead(ENCODER_PIN_B);
+  
+  // Attach interrupt handlers for encoder tracking
+  attachInterrupt(digitalPinToInterrupt(ENCODER_PIN_A), handleEncoderInterrupt, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(ENCODER_PIN_B), handleEncoderInterrupt, CHANGE);
+  
+  // Print startup message and CSV header
+  Serial.println("=== Arduino Cart Controller Started ===");
+  Serial.println("Commands: r=right, l=left, s=start log, e=end log, z=zero, p=status");
+  Serial.println();
+  printCSVHeader();
+  
+  // Initialize session
+  resetCounters();
+}
+
+// ===== ARDUINO MAIN LOOP =====
+void loop() {
+  // Check for incoming serial commands
+  if (Serial.available() > 0) {
+    char command = Serial.read();
+    processCommand(command);
+  }
+  
+  // Small delay to prevent overwhelming the processor
+  delay(10);
+}
+
+// ===== COMMAND PROCESSING =====
+void processCommand(char cmd) {
+  switch (cmd) {
+    case 'r':
+    case 'R':
+      Serial.println(">>> Moving RIGHT");
+      startLoggingSession();
+      moveCart(STEPS_PER_COMMAND, true);  // Move right
+      break;
+      
+    case 'l':
+    case 'L':
+      Serial.println(">>> Moving LEFT");
+      startLoggingSession();
+      moveCart(STEPS_PER_COMMAND, false); // Move left
+      break;
+      
+    case 's':
+    case 'S':
+      startLoggingSession();
+      Serial.println(">>> Manual logging started");
+      break;
+      
+    case 'e':
+    case 'E':
+      stopLoggingSession();
+      Serial.println(">>> Logging stopped");
+      break;
+      
+    case 'z':
+    case 'Z':
+      resetCounters();
+      Serial.println(">>> Counters reset to zero");
+      break;
+      
+    case 'p':
+    case 'P':
+      printCurrentStatus();
+      break;
+      
+    case 'h':
+    case 'H':
+      printHelp();
+      break;
+      
+    default:
+      // Ignore unknown commands
+      break;
+  }
+}
+
+// ===== STEPPER MOTOR CONTROL =====
+void moveCart(int numSteps, bool moveRight) {
+  // Set direction
+  digitalWrite(DIR_PIN, moveRight ? HIGH : LOW);
+  String direction = moveRight ? "RIGHT" : "LEFT";
+  
+  // Execute steps
+  for (int step = 0; step < numSteps; step++) {
+    // Generate step pulse
+    digitalWrite(STEP_PIN, HIGH);
+    delayMicroseconds(STEP_DELAY_US);
+    digitalWrite(STEP_PIN, LOW);
+    delayMicroseconds(STEP_DELAY_US);
+    
+    // Update step counter
+    stepPosition += moveRight ? 1 : -1;
+    
+    // Log data at specified intervals
+    if (isLogging && (step % LOG_INTERVAL == 0)) {
+      logDataPoint(direction);
+    }
+  }
+  
+  // Log final position
+  if (isLogging) {
+    logDataPoint(direction);
+    Serial.println(">>> Movement complete");
+  }
+}
+
+// ===== DATA LOGGING FUNCTIONS =====
+void startLoggingSession() {
+  sessionStartTime = millis();
+  isLogging = true;
+  printCSVHeader();
+}
+
+void stopLoggingSession() {
+  isLogging = false;
+  Serial.println(">>> === Session Complete ===");
+  Serial.println();
+}
+
+void logDataPoint(String direction) {
+  if (!isLogging) return;
+  
+  unsigned long currentTime = millis() - sessionStartTime;
+  
+  // Temporarily disable interrupts for consistent encoder reading
+  noInterrupts();
+  long currentEncoderPos = encoderCount;
+  interrupts();
+  
+  // Output in CSV format: Time, StepPosition, EncoderCount, Direction
+  Serial.print(currentTime);
+  Serial.print(",");
+  Serial.print(stepPosition);
+  Serial.print(",");
+  Serial.print(currentEncoderPos);
+  Serial.print(",");
+  Serial.println(direction);
+}
+
+void printCSVHeader() {
+  Serial.println("Time_ms,Step_Position,Encoder_Count,Direction");
+}
+
+// ===== UTILITY FUNCTIONS =====
+void resetCounters() {
+  noInterrupts();
+  encoderCount = 0;
+  interrupts();
+  stepPosition = 0;
+  sessionStartTime = millis();
+}
+
+void printCurrentStatus() {
+  noInterrupts();
+  long currentEncoder = encoderCount;
+  interrupts();
+  
+  Serial.println("=== CURRENT STATUS ===");
+  Serial.print("Step Position: ");
+  Serial.println(stepPosition);
+  Serial.print("Encoder Count: ");
+  Serial.println(currentEncoder);
+  Serial.print("Logging: ");
+  Serial.println(isLogging ? "ON" : "OFF");
+  Serial.println("=====================");
+}
+
+void printHelp() {
+  Serial.println("=== COMMAND HELP ===");
+  Serial.println("r or R - Move cart RIGHT (1000 steps)");
+  Serial.println("l or L - Move cart LEFT (1000 steps)");
+  Serial.println("s or S - Start data logging");
+  Serial.println("e or E - End data logging");
+  Serial.println("z or Z - Reset all counters to zero");
+  Serial.println("p or P - Print current status");
+  Serial.println("h or H - Show this help menu");
+  Serial.println("===================");
+}
+
+// ===== INTERRUPT HANDLER =====
+void handleEncoderInterrupt() {
+  // Read current encoder states
+  bool currentStateA = digitalRead(ENCODER_PIN_A);
+  bool currentStateB = digitalRead(ENCODER_PIN_B);
+  
+  // Detect changes in encoder A
+  if (currentStateA != lastEncoderA) {
+    // Determine rotation direction using quadrature decoding
+    if (currentStateA == currentStateB) {
+      encoderCount--;  // Counter-clockwise rotation
+    } else {
+      encoderCount++;  // Clockwise rotation
+    }
+  }
+  
+  // Update previous states
+  lastEncoderA = currentStateA;
+  lastEncoderB = currentStateB;
+}
+
+/*
+ * ===== WIRING DIAGRAM =====
+ * 
+ * Arduino Uno    ->    Stepper Driver
+ * Pin 2          ->    DIR (Direction)
+ * Pin 3          ->    STEP (Step Pulse)
+ * GND            ->    GND
+ * 5V             ->    VDD (if needed)
+ * 
+ * Arduino Uno    ->    Rotary Encoder
+ * Pin 4          ->    A (Channel A)
+ * Pin 5          ->    B (Channel B)
+ * GND            ->    GND
+ * 5V             ->    VCC (if needed)
+ * 
+ * ===== USAGE INSTRUCTIONS =====
+ * 
+ * 1. Upload this code to your Arduino
+ * 2. Open Serial Monitor (Tools -> Serial Monitor)
+ * 3. Set baud rate to 9600
+ * 4. Send commands using the input box:
+ *    - 'r' to move right
+ *    - 'l' to move left  
+ *    - 's' to start logging
+ *    - 'e' to end logging
+ *    - 'z' to reset counters
+ *    - 'p' to check status
+ * 
+ * 5. Copy CSV data from Serial Monitor
+ * 6. Paste into Excel or Google Sheets for analysis
+ * 
+ * ===== CSV DATA FORMAT =====
+ * Time_ms: Milliseconds since logging started
+ * Step_Position: Cumulative steps from starting position
+ * Encoder_Count: Raw encoder counts (+ or - from start)
+ * Direction: Current movement direction (RIGHT/LEFT)
+ *//*
+ * Arduino Cart Movement with Rotary Encoder Tracking and CSV Data Logging
+ * 
+ * This sketch controls a stepper motor cart while simultaneously tracking
+ * a rotary encoder and logging data to CSV format via Serial Monitor.
+ * 
+ * Hardware Requirements:
+ * - Arduino Uno/Nano/Pro Mini
+ * - Stepper motor + driver (A4988, DRV8825, etc.)
+ * - Rotary encoder (quadrature type)
+ * - Connecting wires
+ * 
+ * Author: Arduino Cart Controller
+ * Version: 1.0
+ */
+
+// ===== PIN DEFINITIONS =====
+// Stepper Motor Control Pins
+const int STEP_PIN = 3;        // Step pulse pin
+const int DIR_PIN = 2;         // Direction control pin
+
+// Rotary Encoder Pins (must be interrupt capable)
+const int ENCODER_PIN_A = 4;   // Encoder channel A
+const int ENCODER_PIN_B = 5;   // Encoder channel B
+
+// ===== GLOBAL VARIABLES =====
+// Encoder tracking variables
+volatile long encoderCount = 0;           // Current encoder position
+volatile bool lastEncoderA = false;      // Previous state of encoder A
+volatile bool lastEncoderB = false;      // Previous state of encoder B
+
+// Movement tracking variables
+long stepPosition = 0;                   // Current step count from start
+unsigned long sessionStartTime = 0;     // Time when current session started
+bool isLogging = false;                  // Flag for data logging state
+
+// Movement parameters
+const int STEPS_PER_COMMAND = 1000;     // Steps to move per command
+const int STEP_DELAY_US = 800;          // Microseconds between step pulses
+const int LOG_INTERVAL = 10;            // Log data every N steps
+
+// ===== ARDUINO SETUP FUNCTION =====
+void setup() {
+  // Initialize serial communication
+  Serial.begin(9600);
+  while (!Serial) {
+    ; // Wait for serial port to connect (needed for some boards)
+  }
+  
+  // Configure stepper motor pins
+  pinMode(STEP_PIN, OUTPUT);
+  pinMode(DIR_PIN, OUTPUT);
+  digitalWrite(STEP_PIN, LOW);
+  digitalWrite(DIR_PIN, LOW);
+  
+  // Configure encoder pins with internal pull-up resistors
+  pinMode(ENCODER_PIN_A, INPUT_PULLUP);
+  pinMode(ENCODER_PIN_B, INPUT_PULLUP);
+  
+  // Read initial encoder states
+  lastEncoderA = digitalRead(ENCODER_PIN_A);
+  lastEncoderB = digitalRead(ENCODER_PIN_B);
+  
+  // Attach interrupt handlers for encoder tracking
+  attachInterrupt(digitalPinToInterrupt(ENCODER_PIN_A), handleEncoderInterrupt, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(ENCODER_PIN_B), handleEncoderInterrupt, CHANGE);
+  
+  // Print startup message and CSV header
+  Serial.println("=== Arduino Cart Controller Started ===");
+  Serial.println("Commands: r=right, l=left, s=start log, e=end log, z=zero, p=status");
+  Serial.println();
+  printCSVHeader();
+  
+  // Initialize session
+  resetCounters();
+}
+
+// ===== ARDUINO MAIN LOOP =====
+void loop() {
+  // Check for incoming serial commands
+  if (Serial.available() > 0) {
+    char command = Serial.read();
+    processCommand(command);
+  }
+  
+  // Small delay to prevent overwhelming the processor
+  delay(10);
+}
+
+// ===== COMMAND PROCESSING =====
+void processCommand(char cmd) {
+  switch (cmd) {
+    case 'r':
+    case 'R':
+      Serial.println(">>> Moving RIGHT");
+      startLoggingSession();
+      moveCart(STEPS_PER_COMMAND, true);  // Move right
+      break;
+      
+    case 'l':
+    case 'L':
+      Serial.println(">>> Moving LEFT");
+      startLoggingSession();
+      moveCart(STEPS_PER_COMMAND, false); // Move left
+      break;
+      
+    case 's':
+    case 'S':
+      startLoggingSession();
+      Serial.println(">>> Manual logging started");
+      break;
+      
+    case 'e':
+    case 'E':
+      stopLoggingSession();
+      Serial.println(">>> Logging stopped");
+      break;
+      
+    case 'z':
+    case 'Z':
+      resetCounters();
+      Serial.println(">>> Counters reset to zero");
+      break;
+      
+    case 'p':
+    case 'P':
+      printCurrentStatus();
+      break;
+      
+    case 'h':
+    case 'H':
+      printHelp();
+      break;
+      
+    default:
+      // Ignore unknown commands
+      break;
+  }
+}
+
+// ===== STEPPER MOTOR CONTROL =====
+void moveCart(int numSteps, bool moveRight) {
+  // Set direction
+  digitalWrite(DIR_PIN, moveRight ? HIGH : LOW);
+  String direction = moveRight ? "RIGHT" : "LEFT";
+  
+  // Execute steps
+  for (int step = 0; step < numSteps; step++) {
+    // Generate step pulse
+    digitalWrite(STEP_PIN, HIGH);
+    delayMicroseconds(STEP_DELAY_US);
+    digitalWrite(STEP_PIN, LOW);
+    delayMicroseconds(STEP_DELAY_US);
+    
+    // Update step counter
+    stepPosition += moveRight ? 1 : -1;
+    
+    // Log data at specified intervals
+    if (isLogging && (step % LOG_INTERVAL == 0)) {
+      logDataPoint(direction);
+    }
+  }
+  
+  // Log final position
+  if (isLogging) {
+    logDataPoint(direction);
+    Serial.println(">>> Movement complete");
+  }
+}
+
+// ===== DATA LOGGING FUNCTIONS =====
+void startLoggingSession() {
+  sessionStartTime = millis();
+  isLogging = true;
+  printCSVHeader();
+}
+
+void stopLoggingSession() {
+  isLogging = false;
+  Serial.println(">>> === Session Complete ===");
+  Serial.println();
+}
+
+void logDataPoint(String direction) {
+  if (!isLogging) return;
+  
+  unsigned long currentTime = millis() - sessionStartTime;
+  
+  // Temporarily disable interrupts for consistent encoder reading
+  noInterrupts();
+  long currentEncoderPos = encoderCount;
+  interrupts();
+  
+  // Output in CSV format: Time, StepPosition, EncoderCount, Direction
+  Serial.print(currentTime);
+  Serial.print(",");
+  Serial.print(stepPosition);
+  Serial.print(",");
+  Serial.print(currentEncoderPos);
+  Serial.print(",");
+  Serial.println(direction);
+}
+
+void printCSVHeader() {
+  Serial.println("Time_ms,Step_Position,Encoder_Count,Direction");
+}
+
+// ===== UTILITY FUNCTIONS =====
+void resetCounters() {
+  noInterrupts();
+  encoderCount = 0;
+  interrupts();
+  stepPosition = 0;
+  sessionStartTime = millis();
+}
+
+void printCurrentStatus() {
+  noInterrupts();
+  long currentEncoder = encoderCount;
+  interrupts();
+  
+  Serial.println("=== CURRENT STATUS ===");
+  Serial.print("Step Position: ");
+  Serial.println(stepPosition);
+  Serial.print("Encoder Count: ");
+  Serial.println(currentEncoder);
+  Serial.print("Logging: ");
+  Serial.println(isLogging ? "ON" : "OFF");
+  Serial.println("=====================");
+}
+
+void printHelp() {
+  Serial.println("=== COMMAND HELP ===");
+  Serial.println("r or R - Move cart RIGHT (1000 steps)");
+  Serial.println("l or L - Move cart LEFT (1000 steps)");
+  Serial.println("s or S - Start data logging");
+  Serial.println("e or E - End data logging");
+  Serial.println("z or Z - Reset all counters to zero");
+  Serial.println("p or P - Print current status");
+  Serial.println("h or H - Show this help menu");
+  Serial.println("===================");
+}
+
+// ===== INTERRUPT HANDLER =====
+void handleEncoderInterrupt() {
+  // Read current encoder states
+  bool currentStateA = digitalRead(ENCODER_PIN_A);
+  bool currentStateB = digitalRead(ENCODER_PIN_B);
+  
+  // Detect changes in encoder A
+  if (currentStateA != lastEncoderA) {
+    // Determine rotation direction using quadrature decoding
+    if (currentStateA == currentStateB) {
+      encoderCount--;  // Counter-clockwise rotation
+    } else {
+      encoderCount++;  // Clockwise rotation
+    }
+  }
+  
+  // Update previous states
+  lastEncoderA = currentStateA;
+  lastEncoderB = currentStateB;
+}
+
+/*
+ * ===== WIRING DIAGRAM =====
+ * 
+ * Arduino Uno    ->    Stepper Driver
+ * Pin 2          ->    DIR (Direction)
+ * Pin 3          ->    STEP (Step Pulse)
+ * GND            ->    GND
+ * 5V             ->    VDD (if needed)
+ * 
+ * Arduino Uno    ->    Rotary Encoder
+ * Pin 4          ->    A (Channel A)
+ * Pin 5          ->    B (Channel B)
+ * GND            ->    GND
+ * 5V             ->    VCC (if needed)
+ * 
+ * ===== USAGE INSTRUCTIONS =====
+ * 
+ * 1. Upload this code to your Arduino
+ * 2. Open Serial Monitor (Tools -> Serial Monitor)
+ * 3. Set baud rate to 9600
+ * 4. Send commands using the input box:
+ *    - 'r' to move right
+ *    - 'l' to move left  
+ *    - 's' to start logging
+ *    - 'e' to end logging
+ *    - 'z' to reset counters
+ *    - 'p' to check status
+ * 
+ * 5. Copy CSV data from Serial Monitor
+ * 6. Paste into Excel or Google Sheets for analysis
+ * 
+ * ===== CSV DATA FORMAT =====
+ * Time_ms: Milliseconds since logging started
+ * Step_Position: Cumulative steps from starting position
+ * Encoder_Count: Raw encoder counts (+ or - from start)
+ * Direction: Current movement direction (RIGHT/LEFT)
+ */

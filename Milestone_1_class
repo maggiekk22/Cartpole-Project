@@ -1,31 +1,62 @@
-// include the library
-#include <AccelStepper.h>
-//now pins: step and direction
-#define LED BUILTIN 13 //define the built in LED pin
-#define STEP_PIN 9 // what is step?
+#define STEP_PIN 9
 #define DIR_PIN 10
-#define MOTOR_INTERFACE_TYPE 1 //1 means drive using STEP and DIR pins)
-//remove power source from stepper motor to move it
- 
-AccelStepper stepper = AccelStepper
-(MOTOR_INTERFACE_TYPE, STEP_PIN, DIR_PIN);
- 
+
 void setup() {
-    //Activate the pins
-    pinMode(STEP_PIN, O);
-    pinMode(DIR_PIN, OUTPUT);
- 
-    //activate the motor
-    stepper.setMaxSpeed(100000); //steps per second, maximum speed
-    stepper.setAcceleration(500000); //steps per second^2, set accelration
- 
-    //move to position 2000 steps
-    stepper.moveTo(500);//ove to 2000 steps
- 
+  pinMode(STEP_PIN, OUTPUT);
+  pinMode(DIR_PIN, OUTPUT);
+  Serial.begin(9600);  // For serial command input
 }
- 
+
 void loop() {
-  // put your main code here, to run repeatedly:
-  //move the motor
-  stepper.run();
+  if (Serial.available()) {
+    char cmd = Serial.read();
+    if (cmd == 'r') { // Command 'r' to move right
+      moveCart(1000, true);  // Move 1000 steps to the right
+    } else if (cmd == 'l') { // Command 'l' to move left
+      moveCart(1000, false); // Move 1000 steps to the left
+    }
+  }
+}
+
+#include <Encoder.h>
+
+// Define encoder pins
+#define ENCODER_PIN_A A1
+#define ENCODER_PIN_B A2
+
+Encoder myEnc(ENCODER_PIN_A, ENCODER_PIN_B);
+long encoderPosition = 0;
+
+#include <AccelStepper.h>
+
+// Define AccelStepper interface type
+#define STEPPER_INTERFACE AccelStepper::DRIVER
+
+AccelStepper stepper(STEPPER_INTERFACE, STEP_PIN, DIR_PIN);
+
+void moveCart(int steps, bool right) {
+  stepper.setMaxSpeed(100000); // steps per second, maximum speed
+  stepper.setAcceleration(500000); // steps per second^2, set acceleration
+  stepper.setCurrentPosition(0);
+  stepper.moveTo(right ? steps : -steps);
+
+  // Print CSV header
+  Serial.println("time_ms,position_steps,encoder_angle_deg");
+
+  unsigned long startTime = millis();
+  while (stepper.distanceToGo() != 0) {
+    stepper.run();
+
+    // Record encoder position and angle
+    encoderPosition = myEnc.read();
+    float angle = (encoderPosition * 360.0) / 600.0; // 600 pulses per revolution
+    unsigned long currentTime = millis() - startTime;
+
+    // Output CSV row: time in ms, position in steps, angle in degrees
+    Serial.print(currentTime);
+    Serial.print(",");
+    Serial.print(stepper.currentPosition());
+    Serial.print(",");
+    Serial.println(angle);
+  }
 }

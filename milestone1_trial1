@@ -1,78 +1,102 @@
+// -----------------------------
+// Pins
+// -----------------------------
 #define STEP_PIN 9
 #define DIR_PIN 10
+#define ENCODER_PIN_A A1
+#define ENCODER_PIN_B A2
 
+// -----------------------------
+// Libraries
+// -----------------------------
+#include <Encoder.h>
+#include <AccelStepper.h>
+
+// -----------------------------
+// Globals
+// -----------------------------
+Encoder myEnc(ENCODER_PIN_A, ENCODER_PIN_B);
+long encoderPosition = 0;
+
+#define STEPPER_INTERFACE AccelStepper::DRIVER
+AccelStepper stepper(STEPPER_INTERFACE, STEP_PIN, DIR_PIN);
+
+// -----------------------------
+// Setup
+// -----------------------------
 void setup() {
   pinMode(STEP_PIN, OUTPUT);
   pinMode(DIR_PIN, OUTPUT);
-  Serial.begin(9600);  // For serial command input
+  Serial.begin(9600);
+
+  // Default motion limits
+  stepper.setMaxSpeed(1000);     // steps/s
+  stepper.setAcceleration(200);  // steps/s^2
+
+  Serial.println("Ready. Commands:");
+  Serial.println(" r <steps> : move right");
+  Serial.println(" l <steps> : move left");
 }
 
+// -----------------------------
+// Loop
+// -----------------------------
 void loop() {
   if (Serial.available()) {
     String cmd = Serial.readStringUntil('\n'); // read entire line
-    cmd.trim(); // remove spaces/newline
+    cmd.trim();
 
     if (cmd.startsWith("r ")) {
-      int steps = cmd.substring(2).toInt(); // extract number after "r "
+      int steps = cmd.substring(2).toInt();
       moveCart(steps, true);
     } 
     else if (cmd.startsWith("l ")) {
-      int steps = cmd.substring(2).toInt(); // extract number after "l "
+      int steps = cmd.substring(2).toInt();
       moveCart(steps, false);
     }
   }
 }
 
-#include <Encoder.h>
-
-// Define encoder pins
-#define ENCODER_PIN_A A1
-#define ENCODER_PIN_B A2
-
-Encoder myEnc(ENCODER_PIN_A, ENCODER_PIN_B);
-long encoderPosition = 0;
-
-#include <AccelStepper.h>
-
-// Define AccelStepper interface type
-#define STEPPER_INTERFACE AccelStepper::DRIVER
-
-AccelStepper stepper(STEPPER_INTERFACE, STEP_PIN, DIR_PIN);
-
+// -----------------------------
+// Motion Function
+// -----------------------------
 void moveCart(int steps, bool right) {
-  stepper.setMaxSpeed(100000); // steps per second, maximum speed
-  stepper.setAcceleration(1000); // steps per second^2, set acceleration
   stepper.setCurrentPosition(0);
   stepper.moveTo(right ? steps : -steps);
 
-  // Print CSV header
-  Serial.println("time_ms,position_steps,encoder_angle_deg,velocity_steps_per_s");
+  // CSV header
+  Serial.println("time_ms,position_steps,encoder_angle_deg,velocity_steps_per_s,acceleration_steps_per_s2");
 
   unsigned long startTime = millis();
   long lastPosition = stepper.currentPosition();
   unsigned long lastTime = millis();
-
   float lastVelocity = 0;
+
   while (stepper.distanceToGo() != 0) {
     stepper.run();
 
-    // Record encoder position and angle
+    // Encoder
     encoderPosition = myEnc.read();
-    float angle = (encoderPosition * 360.0) / 600.0; // 600 pulses per revolution
+    float angle = (encoderPosition * 360.0) / 600.0; // 600 PPR encoder
     unsigned long currentTime = millis() - startTime;
 
-    // Calculate velocity in steps per second
+    // Calculate velocity/acceleration with smoothing (every 20 ms)
     long currentPosition = stepper.currentPosition();
     unsigned long now = millis();
-    float velocity = 0;
+    float velocity = lastVelocity;
     float acceleration = 0;
     unsigned long dt = now - lastTime;
-    if (dt > 0) {
+
+    if (dt >= 1) {  // update every 20ms
       velocity = (currentPosition - lastPosition) * 1000.0 / dt;
       acceleration = (velocity - lastVelocity) * 1000.0 / dt;
+
+      lastPosition = currentPosition;
+      lastTime = now;
+      lastVelocity = velocity;
     }
 
-    // Output CSV row: time in ms, position in steps, angle in degrees, velocity in steps/s, acceleration in steps/s^2
+    // Output CSV
     Serial.print(currentTime);
     Serial.print(", ");
     Serial.print(currentPosition);
@@ -82,9 +106,5 @@ void moveCart(int steps, bool right) {
     Serial.print(velocity);
     Serial.print(", ");
     Serial.println(acceleration);
-
-    lastPosition = currentPosition;
-    lastTime = now;
-    lastVelocity = velocity;
   }
 }

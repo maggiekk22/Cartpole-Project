@@ -9,11 +9,16 @@ void setup() {
 
 void loop() {
   if (Serial.available()) {
-    char cmd = Serial.read();
-    if (cmd == 'r') { // Command 'r' to move right
-      moveCart(1000, true);  // Move 1000 steps to the right
-    } else if (cmd == 'l') { // Command 'l' to move left
-      moveCart(1000, false); // Move 1000 steps to the left
+    String cmd = Serial.readStringUntil('\n'); // read entire line
+    cmd.trim(); // remove spaces/newline
+
+    if (cmd.startsWith("r ")) {
+      int steps = cmd.substring(2).toInt(); // extract number after "r "
+      moveCart(steps, true);
+    } 
+    else if (cmd.startsWith("l ")) {
+      int steps = cmd.substring(2).toInt(); // extract number after "l "
+      moveCart(steps, false);
     }
   }
 }
@@ -27,29 +32,59 @@ void loop() {
 Encoder myEnc(ENCODER_PIN_A, ENCODER_PIN_B);
 long encoderPosition = 0;
 
+#include <AccelStepper.h>
+
+// Define AccelStepper interface type
+#define STEPPER_INTERFACE AccelStepper::DRIVER
+
+AccelStepper stepper(STEPPER_INTERFACE, STEP_PIN, DIR_PIN);
+
 void moveCart(int steps, bool right) {
-  digitalWrite(DIR_PIN, right ? HIGH : LOW);
+  stepper.setMaxSpeed(100000); // steps per second, maximum speed
+  stepper.setAcceleration(1000); // steps per second^2, set acceleration
+  stepper.setCurrentPosition(0);
+  stepper.moveTo(right ? steps : -steps);
 
   // Print CSV header
-  Serial.println("time_ms,position_steps,encoder_angle_deg");
+  Serial.println("time_ms,position_steps,encoder_angle_deg,velocity_steps_per_s");
 
   unsigned long startTime = millis();
-  for (int i = 0; i < steps; i++) {
-    digitalWrite(STEP_PIN, HIGH);
-    delayMicroseconds(800);
-    digitalWrite(STEP_PIN, LOW);
-    delayMicroseconds(800);
+  long lastPosition = stepper.currentPosition();
+  unsigned long lastTime = millis();
+
+  float lastVelocity = 0;
+  while (stepper.distanceToGo() != 0) {
+    stepper.run();
 
     // Record encoder position and angle
     encoderPosition = myEnc.read();
-    float angle = (encoderPosition * 360.0) / 600; // Assuming 600 pulses per revolution
+    float angle = (encoderPosition * 360.0) / 600.0; // 600 pulses per revolution
     unsigned long currentTime = millis() - startTime;
 
-    // Output CSV row: time in ms, position in steps, angle in degrees
+    // Calculate velocity in steps per second
+    long currentPosition = stepper.currentPosition();
+    unsigned long now = millis();
+    float velocity = 0;
+    float acceleration = 0;
+    unsigned long dt = now - lastTime;
+    if (dt > 0) {
+      velocity = (currentPosition - lastPosition) * 1000.0 / dt;
+      acceleration = (velocity - lastVelocity) * 1000.0 / dt;
+    }
+
+    // Output CSV row: time in ms, position in steps, angle in degrees, velocity in steps/s, acceleration in steps/s^2
     Serial.print(currentTime);
-    Serial.print(",");
-    Serial.print(i + 1);
-    Serial.print(",");
-    Serial.println(angle);
+    Serial.print(", ");
+    Serial.print(currentPosition);
+    Serial.print(", ");
+    Serial.print(angle);
+    Serial.print(", ");
+    Serial.print(velocity);
+    Serial.print(", ");
+    Serial.println(acceleration);
+
+    lastPosition = currentPosition;
+    lastTime = now;
+    lastVelocity = velocity;
   }
 }

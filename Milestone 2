@@ -1,1 +1,96 @@
 
+// Import the ellapsedMillis library
+#include <elapsedMillis.h>
+
+elapsedMillis timeElapsed_ms;
+
+const int maxSamples = 1000; // Maximum number of samples to store
+float timeArray[maxSamples];
+float sineArray[maxSamples];
+int sample_count = 0;
+
+
+void setup() {
+  // put your setup code here, to run once:
+
+}
+
+void loop() {
+
+  // put your main code here, to run repeatedly:
+  // Parse the Serial input for one of the following commands:
+  // "S [float, Hz], [float, seconds]" to compute the sine wave at the given frequency for the given time interval
+  // Store all the data in two arrays (time, sine wave value)
+  // "D" - Data dump: output the contents of the arrays to the Serial monitor in CSV format
+  // "C" - Clear the arrays
+  // "H" - Help: output the list of commands to the Serial monitor
+  if (Serial.available() > 0) {
+    String command = Serial.readStringUntil('\n');
+    command.trim(); // Remove any leading/trailing whitespace
+
+    if (command.startsWith("S")) {
+      
+      // Start command
+      float frequency_Hz = 1.0; // Default frequency
+      float duration_ms = 1.0;  // Default duration
+
+      // Parse the command for frequency and duration
+      int firstComma = command.indexOf(',');
+      if (firstComma != -1) {
+        frequency_Hz = command.substring(2, firstComma).toFloat();
+        duration_ms = command.substring(firstComma + 1).toFloat() * 1000; // Convert to milliseconds
+      } else {
+        frequency_Hz = command.substring(2).toFloat();
+      }
+    // Print the parsed values
+      Serial.print("Generating sine wave with parameters:\n");
+      Serial.print("Frequency (Hz): ");
+      Serial.println(frequency_Hz);
+      Serial.print("Duration (ms): ");
+      Serial.println(duration_ms);
+      
+
+
+      // Compute the sine wave and store in arrays
+      sample_count = 0;
+      timeElapsed_ms = 0; // Reset elapsed time
+      while (timeElapsed_ms < duration_ms && sample_count < maxSamples) {
+        timeArray[sample_count] = timeElapsed_ms; // Convert to seconds
+        sineArray[sample_count] = sin(2 * PI * frequency_Hz * timeArray[sample_count]/ 1000);
+        sample_count++;
+        delay(10); // Sample every 10 ms
+      }
+      Serial.println("Done.");
+    } 
+    else if (command == "D") {
+      // Data dump command
+      Serial.println("time_ms,sine_value");
+      for (int i = 0; i < sample_count; i++) {
+        Serial.print(timeArray[i], 4);
+        Serial.print(",");
+        Serial.println(sineArray[i], 4);
+      }
+      // At the end, print "Done" so the receiver knows no more data is coming.
+      Serial.println("Done.");
+
+    } 
+    else if (command == "C") {
+      // Clear command
+      sample_count = 0;
+      Serial.println("Data arrays cleared.");
+    } 
+    else if (command == "H") {
+      // Help command
+      Serial.println("Available commands:");
+      Serial.println("S [frequency, Hz], [duration, seconds] - Start sine wave generation");
+      Serial.println("D - Dump data in CSV format");
+      Serial.println("C - Clear data arrays");
+      Serial.println("H - Display this help message");
+    } 
+    else {
+      Serial.println("Unknown command. Type 'H' for help.");
+    }
+  }
+
+
+}

@@ -1,266 +1,147 @@
-/*******************************************************************************
-
-  FixedSketch.ino
-  - Combines stepper motion commands ("r <steps>", "l <steps>") with a simple
-    sine-wave data generator ("S <freq>[, <duration_s>]", "D", "C", "H").
-  - Fixes syntax/bracing issues from the original, corrects timing/velocity
-    calculations, and cleans up CSV output formatting.
-
-  Notes:
-  - Requires libraries:
-    * AccelStepper
-    * Encoder
-    * elapsedMillis
-
-  Commands over Serial:
-  - r <steps>    : move right (positive steps)
-  - l <steps>    : move left  (negative steps)
-  - S f[, d]     : generate sine at frequency f (Hz). Optional duration d (s).
-                   Example: "S 2.5, 3" => 2.5 Hz, 3 seconds
-  - D            : dump stored sine data as CSV (time_ms, sine_value)
-  - C            : clear stored sine data
-  - H            : help
-
-*******************************************************************************/
-
-#include <elapsedMillis.h>
+// --------------------------------------------------
+// Libraries
+// --------------------------------------------------
 #include <Encoder.h>
 #include <AccelStepper.h>
+#include <elapsedMillis.h>
+#include <math.h>
 
-// -----------------------------
-// Configuration / Globals
-// -----------------------------
-elapsedMillis timeElapsed_ms;
-
-const int maxSamples = 1000; // Maximum number of samples to store
-float timeArray[maxSamples];
-float sineArray[maxSamples];
-int sample_count = 0;
-
-// Pins
+// --------------------------------------------------
+// Pin Definitions
+// --------------------------------------------------
 #define STEP_PIN 9
 #define DIR_PIN 10
 #define ENCODER_PIN_A A1
 #define ENCODER_PIN_B A2
 
-// Encoder
-#define ENCODER_PPR 600.0f
+// --------------------------------------------------
+// Stepper + Encoder Setup
+// --------------------------------------------------
 Encoder myEnc(ENCODER_PIN_A, ENCODER_PIN_B);
 long encoderPosition = 0;
 
-// Stepper (driver interface)
 #define STEPPER_INTERFACE AccelStepper::DRIVER
 AccelStepper stepper(STEPPER_INTERFACE, STEP_PIN, DIR_PIN);
 
-// Motion defaults
-const float DEFAULT_MAX_SPEED = 1000.0; // steps/s
-const float DEFAULT_ACCEL = 200.0;      // steps/s^2
+// --------------------------------------------------
+// Data Storage
+// --------------------------------------------------
+elapsedMillis timeElapsed_ms;
+const int maxSamples = 1000;
+float timeArray[maxSamples];
+float angleArray[maxSamples];
+int sample_count = 0;
+bool recording = false;
 
+// --------------------------------------------------
+// Setup
+// --------------------------------------------------
 void setup() {
   pinMode(STEP_PIN, OUTPUT);
   pinMode(DIR_PIN, OUTPUT);
-
   Serial.begin(9600);
-  while (!Serial) { ; } // wait for serial on some boards (harmless on others)
 
-  // Stepper configuration
-  stepper.setMaxSpeed(DEFAULT_MAX_SPEED);
-  stepper.setAcceleration(DEFAULT_ACCEL);
+  stepper.setMaxSpeed(7400);
+  stepper.setAcceleration(600);
 
-  Serial.println(F("Ready. Commands:"));
-  Serial.println(F(" r <steps> : move right"));
-  Serial.println(F(" l <steps> : move left"));
-  Serial.println(F(" S <freq>[, <duration_s>] : generate sine wave (Hz, seconds)"));
-  Serial.println(F(" D : dump sine data (CSV)"));
-  Serial.println(F(" C : clear sine data"));
-  Serial.println(F(" H : help"));
+  Serial.println("System Ready. Commands:");
+  Serial.println(" r <steps> : move right and record motion");
+  Serial.println(" l <steps> : move left and record motion");
+  Serial.println(" D : dump recorded encoder data");
+  Serial.println(" C : clear data arrays");
+  Serial.println(" H : help");
 }
 
+// --------------------------------------------------
+// Loop
+// --------------------------------------------------
 void loop() {
-  // Always call run() frequently in case stepper is moving from a previous call.
-  // For non-blocking motion you'd normally avoid blocking while loops, but here
-  // moveCart intentionally blocks until the move completes and streams CSV.
-  // We still call stepper.run() here to be safe if loop() is iterated.
-  stepper.run();
-
-  // Handle any incoming serial commands
-  if (Serial.available() > 0) {
+  if (Serial.available()) {
     String cmd = Serial.readStringUntil('\n');
     cmd.trim();
-    if (cmd.length() == 0) return;
 
-    // Motion commands
     if (cmd.startsWith("r ")) {
       int steps = cmd.substring(2).toInt();
-      moveCart(steps, true);
-    } else if (cmd.startsWith("l ")) {
+      moveCartAndRecord(steps, true);
+    }
+    else if (cmd.startsWith("l ")) {
       int steps = cmd.substring(2).toInt();
-      moveCart(steps, false);
+      moveCartAndRecord(steps, false);
     }
-    // Sine generation and data commands
-    else if (cmd.startsWith("S") || cmd.startsWith("s")) {
-      handleSineCommand(cmd);
-    } else if (cmd == "D") {
-      dumpSineData();
-    } else if (cmd == "C") {
+    else if (cmd == "D") {
+      dumpData();
+    }
+    else if (cmd == "C") {
       sample_count = 0;
-      Serial.println(F("Data arrays cleared."));
-    } else if (cmd == "H") {
-      printHelp();
-    } else {
-      Serial.println(F("Unknown command. Type 'H' for help."));
+      Serial.println("Data arrays cleared.");
     }
+    else if (cmd == "H") {
+      Serial.println("Available commands:");
+      Serial.println(" r <steps> : move right and record motion");
+      Serial.println(" l <steps> : move left and record motion");
+      Serial.println(" D : dump recorded encoder data");
+      Serial.println(" C : clear data arrays");
+      Serial.println(" H : display help");
+    }
+    else {
+      Serial.println("Unknown command. Type 'H' for help.");
+    }
+  }
+
+  // Record ongoing oscillation (if active)
+  if (recording && sample_count < maxSamples) {
+    timeArray[sample_count] = timeElapsed_ms;
+    long rawEncoder = myEnc.read();
+    angleArray[sample_count] = (rawEncoder * 360.0) / 600.0; // 600 PPR encoder
+    sample_count++;
+    delay(10); // sampling interval (10ms)
   }
 }
 
-// -----------------------------
-// Motion Function
-// -----------------------------
-void moveCart(int steps, bool right) {
-  // Reset current position and plan the move
+// --------------------------------------------------
+// Move and Record Motion
+// --------------------------------------------------
+void moveCartAndRecord(int steps, bool right) {
   stepper.setCurrentPosition(0);
   stepper.moveTo(right ? steps : -steps);
 
-  // CSV header (no extra spaces to keep it easy to parse)
-  Serial.println("time_ms,position_steps,encoder_angle_deg,velocity_steps_per_s,acceleration_steps_per_s2");
-
-  unsigned long startTime = millis();
-  long lastPosition = stepper.currentPosition();
-  unsigned long lastTime = millis();
-  float lastVelocity = 0.0f;
-  const unsigned long smoothingIntervalMs = 20; // update velocity/accel every 20 ms
-
-  while (stepper.distanceToGo() != 0) {
-    // Drive the stepper; this must be called frequently
-    stepper.run();
-
-    // Read encoder (not interrupt-driven here)
-    encoderPosition = myEnc.read();
-    float angle = (encoderPosition * 360.0f) / ENCODER_PPR;
-
-    unsigned long currentTimeMs = millis() - startTime;
-
-    // Velocity/acceleration smoothing
-    long currentPosition = stepper.currentPosition();
-    unsigned long now = millis();
-    unsigned long dt = now - lastTime;
-    float velocity = lastVelocity;
-    float acceleration = 0.0f;
-
-    if (dt >= smoothingIntervalMs) {
-      // velocity in steps per second
-      velocity = (currentPosition - lastPosition) * 1000.0f / (float)dt;
-      // acceleration in steps per second^2
-      acceleration = (velocity - lastVelocity) * 1000.0f / (float)dt;
-
-      lastPosition = currentPosition;
-      lastTime = now;
-      lastVelocity = velocity;
-    }
-
-    // Output CSV line
-    Serial.print(currentTimeMs);
-    Serial.print(',');
-    Serial.print(currentPosition);
-    Serial.print(',');
-    Serial.print(angle, 3);
-    Serial.print(',');
-    Serial.print(velocity, 3);
-    Serial.print(',');
-    Serial.println(acceleration, 3);
-  }
-
-  // final newline for clarity
-  Serial.println(F("Move complete."));
-}
-
-// -----------------------------
-// Sine generation and helpers
-// -----------------------------
-void handleSineCommand(const String &cmd) {
-  // Command forms:
-  // "S <freq>" or "S <freq>, <duration_s>"
-  float frequency_Hz = 1.0f;
-  float duration_s = 1.0f;
-
-  // Remove leading 'S' and whitespace
-  String payload = cmd.substring(1);
-  payload.trim();
-
-  // If there's a comma, split frequency and duration
-  int comma = payload.indexOf(',');
-  if (comma >= 0) {
-    String fStr = payload.substring(0, comma);
-    String dStr = payload.substring(comma + 1);
-    fStr.trim();
-    dStr.trim();
-    if (fStr.length() > 0) frequency_Hz = fStr.toFloat();
-    if (dStr.length() > 0) duration_s = dStr.toFloat();
-  } else {
-    if (payload.length() > 0) frequency_Hz = payload.toFloat();
-  }
-
-  if (frequency_Hz <= 0.0f) {
-    Serial.println(F("Invalid frequency. Must be > 0."));
-    return;
-  }
-  if (duration_s <= 0.0f) {
-    Serial.println(F("Invalid duration. Must be > 0."));
-    return;
-  }
-
-  float duration_ms = duration_s * 1000.0f;
-
-  Serial.println(F("Generating sine wave with parameters:"));
-  Serial.print(F("Frequency (Hz): "));
-  Serial.println(frequency_Hz, 4);
-  Serial.print(F("Duration (ms): "));
-  Serial.println(duration_ms, 1);
-
-  // Generate sine wave and store in arrays
+  // Reset and start recording
   sample_count = 0;
-  timeElapsed_ms = 0; // reset elapsed timer
+  timeElapsed_ms = 0;
+  recording = true;
+  Serial.println("Recording started...");
 
-  // Sampling interval: we'll sample every 10 ms (100 Hz)
-  const unsigned long sampleIntervalMs = 10;
-  unsigned long lastSampleT = 0;
-
-  while ((float)timeElapsed_ms < duration_ms && sample_count < maxSamples) {
-    // Only sample at the sample interval
-    if ((unsigned long)timeElapsed_ms - lastSampleT >= sampleIntervalMs) {
-      float t_ms = (float)timeElapsed_ms; // elapsedMillis is in ms
-      timeArray[sample_count] = t_ms;
-      // sine expects seconds: convert ms -> s
-      float val = sin(2.0f * PI * frequency_Hz * (t_ms / 1000.0f));
-      sineArray[sample_count] = val;
-      sample_count++;
-      lastSampleT = (unsigned long)timeElapsed_ms;
-    }
-    // Give time to background tasks and serial handling
-    // but keep this loop reasonably responsive
-    delay(1);
+  // Move stepper (kick the pendulum)
+  while (stepper.distanceToGo() != 0) {
+    stepper.run();
   }
 
-  Serial.print(F("Done. Samples stored: "));
+  // Continue recording after motion for extra time (e.g., pendulum oscillation)
+  unsigned long recordDuration = 5000; // ms
+  unsigned long start = millis();
+  while (millis() - start < recordDuration && sample_count < maxSamples) {
+    timeArray[sample_count] = timeElapsed_ms;
+    long rawEncoder = myEnc.read();
+    angleArray[sample_count] = (rawEncoder * 360.0) / 600.0;
+    sample_count++;
+    delay(10);
+  }
+
+  recording = false;
+  Serial.println("Recording stopped.");
+  Serial.print("Samples collected: ");
   Serial.println(sample_count);
 }
 
-void dumpSineData() {
-  Serial.println(F("time_ms,sine_value"));
+// --------------------------------------------------
+// Dump Recorded Data
+// --------------------------------------------------
+void dumpData() {
+  Serial.println("time_ms,encoder_angle_deg");
   for (int i = 0; i < sample_count; i++) {
-    Serial.print(timeArray[i], 4);
-    Serial.print(',');
-    Serial.println(sineArray[i], 4);
+    Serial.print(timeArray[i], 2);
+    Serial.print(",");
+    Serial.println(angleArray[i], 3);
   }
-  Serial.println(F("Done."));
-}
-
-void printHelp() {
-  Serial.println(F("Available commands:"));
-  Serial.println(F("r <steps>  - move right"));
-  Serial.println(F("l <steps>  - move left"));
-  Serial.println(F("S <freq>[, <duration_s>] - Start sine wave generation"));
-  Serial.println(F("D - Dump data in CSV format"));
-  Serial.println(F("C - Clear data arrays"));
-  Serial.println(F("H - Display this help message"));
+  Serial.println("Done.");
 }
